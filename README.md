@@ -33,8 +33,11 @@
 
 project/  
 ├── part3_encode_decode_main.c
+
 ├── part1_frequency_nodes.c
+
 ├── part2_huffman_tree.c
+
 └──  README.md  
 
 ## 실행 방법
