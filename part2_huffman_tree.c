@@ -97,6 +97,7 @@ char code_table[MAX_CHAR][MAX_CODE];
    - 두 큐의 front 값을 비교해 더 작은 쪽 dequeue
 ───────────────────────────────────────────────── */
 
+
 Node *pick_min(Queue *qA, Queue *qB) {
     if (queue_empty(qA) && queue_empty(qB)) return NULL;
     if (queue_empty(qA)) return dequeue(qB);
