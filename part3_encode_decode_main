@@ -1,0 +1,213 @@
+/* =====================================================
+   PART 3: 파일 압축·해제 및 메인 함수
+   - 5단계: encode_file()  (압축)
+   - decode_file()         (압축 해제 + 트리 복원)
+   - print_code_table()    (부호표 출력)
+   - main()                (진입점, 명령어 분기)
+   ===================================================== */
+
+/* ───────────────────────────────
+   5단계: 압축 파일 작성 (encode_file)
+
+   [파일 구조]
+   ┌──────────────────────────────┐
+   │  헤더: freq[256] × 4바이트  │  ← 압축 해제 시 트리 재구축에 사용
+   ├──────────────────────────────┤
+   │  바디: 비트코드 → 8비트 묶음│  ← 실제 압축 데이터
+   ├──────────────────────────────┤
+   │  끝:   패딩 비트 수 (1바이트)│  ← 마지막 바이트 유효 비트 계산용
+   └──────────────────────────────┘
+
+   [비트 패킹]
+   - 각 문자를 허프만 코드(0/1 문자열)로 바꾸고
+   - 8비트가 모이면 1바이트로 파일에 기록
+   - 마지막에 비트가 남으면 왼쪽 정렬 후 패딩(0) 채움
+─────────────────────────────── */
+
+void encode_file(const char *input, const char *output, int freq[MAX_CHAR]) {
+    FILE *in  = fopen(input,  "rb");
+    FILE *out = fopen(output, "wb");
+    if (!in || !out) { perror("파일 열기 실패"); exit(1); }
+
+    // 헤더: 빈도수 정보 저장 (256개 int = 1024바이트)
+    fwrite(freq, sizeof(int), MAX_CHAR, out);
+
+    // 바디: 비트코드 → 8비트씩 묶어 바이트로 기록
+    unsigned char buf = 0;
+    int bit_cnt = 0;
+    int c;
+
+    while ((c = fgetc(in)) != EOF) {
+        char *code = code_table[(unsigned char)c];
+        for (int i = 0; code[i]; i++) {
+            buf = (buf << 1) | (code[i] - '0');
+            bit_cnt++;
+            if (bit_cnt == 8) {
+                fputc(buf, out);
+                buf = 0;
+                bit_cnt = 0;
+            }
+        }
+    }
+
+    // 남은 비트 패딩 (왼쪽 정렬)
+    if (bit_cnt > 0) {
+        buf <<= (8 - bit_cnt);
+        fputc(buf, out);
+    }
+
+    // 마지막 1바이트: 패딩된 비트 수 저장
+    fputc((unsigned char)(8 - bit_cnt) % 8, out);
+
+    fclose(in);
+    fclose(out);
+}
+
+/* ───────────────────────────────
+   압축 해제: 트리 복원 후 디코딩 (decode_file)
+
+   [동작 원리]
+   1. 헤더에서 freq[] 읽기 → 허프만 트리 재구축
+   2. 파일 끝에서 패딩 비트 수 확인
+   3. 바디 바이트를 1비트씩 읽으며 트리 탐색
+      - 0 → 왼쪽, 1 → 오른쪽
+      - 리프 도달 시 해당 문자 출력, 루트로 복귀
+   4. 마지막 바이트는 유효 비트 수만큼만 처리
+─────────────────────────────── */
+
+void decode_file(const char *input, const char *output) {
+    FILE *in  = fopen(input,  "rb");
+    FILE *out = fopen(output, "wb");
+    if (!in || !out) { perror("파일 열기 실패"); exit(1); }
+
+    // 헤더에서 빈도수 읽기
+    int freq[MAX_CHAR];
+    fread(freq, sizeof(int), MAX_CHAR, in);
+
+    // 트리 재구축
+    Queue qA, qB;
+    queue_init(&qA);
+    queue_init(&qB);
+    init_nodes(freq, &qA);
+    Node *root = build_huffman_tree(&qA, &qB);
+
+    // 파일 끝에서 패딩 비트 수 읽기
+    long cur = ftell(in);
+    fseek(in, -1, SEEK_END);
+    long end = ftell(in);
+    unsigned char padding = fgetc(in);
+    fseek(in, cur, SEEK_SET);
+
+    // 바디 비트 디코딩
+    Node *cur_node = root;
+    long body_size = end - cur;
+    long bytes_read = 0;
+
+    while (bytes_read < body_size) {
+        unsigned char byte = fgetc(in);
+        bytes_read++;
+        // 마지막 바이트는 패딩을 제외한 비트만 처리
+        int bits = (bytes_read == body_size) ? (8 - padding) : 8;
+
+        for (int i = 7; i >= 8 - bits; i--) {
+            int bit = (byte >> i) & 1;
+            cur_node = bit ? cur_node->right : cur_node->left;
+
+            if (!cur_node->left && !cur_node->right) {
+                fputc(cur_node->ch, out);
+                cur_node = root;    // 다음 문자 디코딩을 위해 루트로 복귀
+            }
+        }
+    }
+
+    fclose(in);
+    fclose(out);
+}
+
+/* ───────────────────────────────
+   부호표 출력 (print_code_table)
+─────────────────────────────── */
+
+void print_code_table() {
+    printf("\n=== 부호표 ===\n");
+    printf("%-10s %-10s\n", "문자", "코드");
+    printf("------------------------------\n");
+    for (int i = 0; i < MAX_CHAR; i++) {
+        if (code_table[i][0] != '\0') {
+            if (i == '\n')      printf("%-10s ", "(줄바꿈)");
+            else if (i == ' ')  printf("%-10s ", "(공백)");
+            else                printf("%-10c ", (char)i);
+            printf("%-10s\n", code_table[i]);
+        }
+    }
+}
+
+/* ───────────────────────────────
+   메인 함수 (main)
+
+   사용법:
+     압축:  ./huffman encode <원본파일> <압축파일>
+     해제:  ./huffman decode <압축파일> <복원파일>
+
+   [encode 흐름]
+   1단계 count_frequency → 2단계 init_nodes →
+   3단계 build_huffman_tree → 4단계 generate_code_table →
+   5단계 encode_file
+
+   [decode 흐름]
+   decode_file (내부에서 트리 복원 + 비트 디코딩)
+─────────────────────────────── */
+
+int main(int argc, char *argv[]) {
+    if (argc < 4) {
+        printf("사용법:\n");
+        printf("  압축:   %s encode <원본파일> <압축파일>\n", argv[0]);
+        printf("  해제:   %s decode <압축파일> <복원파일>\n", argv[0]);
+        return 1;
+    }
+
+    if (strcmp(argv[1], "encode") == 0) {
+        printf("=== 압축 시작 ===\n");
+
+        // 1단계: 빈도수 구하기
+        int freq[MAX_CHAR];
+        count_frequency(argv[2], freq);
+        printf("[1단계] 빈도수 측정 완료\n");
+
+        // 2단계: 노드 생성 및 Queue A 삽입
+        Queue qA, qB;
+        queue_init(&qA);
+        queue_init(&qB);
+        init_nodes(freq, &qA);
+        printf("[2단계] 노드 생성 및 Queue A 삽입 완료 (문자 종류: %d개)\n", qA.size);
+
+        // 3단계: 허프만 트리 빌드
+        Node *root = build_huffman_tree(&qA, &qB);
+        printf("[3단계] 허프만 트리 빌드 완료\n");
+
+        // 4단계: 부호표 생성
+        memset(code_table, 0, sizeof(code_table));
+        Stack s;
+        stack_init(&s);
+        generate_code_table(root, &s);
+        print_code_table();
+        printf("[4단계] 부호표 생성 완료\n");
+
+        // 5단계: 압축 파일 작성
+        encode_file(argv[2], argv[3], freq);
+        printf("[5단계] 압축 파일 작성 완료: %s\n", argv[3]);
+        printf("=== 압축 완료 ===\n");
+
+    } else if (strcmp(argv[1], "decode") == 0) {
+        printf("=== 압축 해제 시작 ===\n");
+        decode_file(argv[2], argv[3]);
+        printf("압축 해제 완료: %s\n", argv[3]);
+        printf("=== 압축 해제 완료 ===\n");
+
+    } else {
+        printf("알 수 없는 명령어: %s\n", argv[1]);
+        return 1;
+    }
+
+    return 0;
+}
